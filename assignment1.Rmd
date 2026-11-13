@@ -1,0 +1,169 @@
+---
+output:
+  html_document: default
+  pdf_document: default
+---
+<style>
+    h1, h2{
+        text-align: center;
+    }
+
+    h1{
+        text-align: center;
+        font-size: 3em;
+        font-weight: bold;
+    }
+
+    h3{
+        font-weight: bold;
+        background-color: rgb(230, 230, 230);
+        padding-left: 20px;
+        padding-top: 5px;
+        padding-bottom: 5px;
+        margin-top: 50px;
+    }
+
+    table{
+        width: 100%;
+    }
+    
+    h4{
+        display: block;
+        width: 100%;
+        padding-right: 20px;
+        text-align: right;
+        font-weight: bold;
+        background-color: rgb(240,240,240);
+    }
+
+</style>
+
+# CMP713 Data Mining
+## 2026-2027 Fall - Assignment 1
+## Given 09/11/2026, Due 15/11/2026 (23:59)
+
+
+
+```{r, echo=F}
+library(knitr)
+student_name = "Burkay Genç"
+student_id   = "11111111111"
+grades       = c(10,6,7,7)
+given        = c(0,0,0,0)
+
+head_matter <- data.frame(Name  = c(student_name, ""),
+                          ID    = c(student_id, ""),
+                          Points= c("Max", "Given"),
+                          Task1 = c(grades[1], given[1]),
+                          Task2 = c(grades[2], given[2]),
+                          Task3 = c(grades[3], given[3]),
+                          Task4 = c(grades[4], given[4]),
+                          Total = c(sum(grades), sum(given)))
+kable(head_matter)
+```
+
+In this assignment you will work on the data of the **Meltem wind farm**: 12 turbines, 5 years, one record per turbine per day (`meltem_daily.csv`). Read the data dictionary (`meltem_dictionary.md`) first, then look at the data before you compute anything. The four tasks use what we learned in Lectures 4-7: missing values, sampling, time series components and exploratory analysis.
+
+**Rules**
+
+- Do not change anything in this document, other than `student_name` and `student_id` in the chunk above, and the Answer sections below.
+- You will submit **only your Rmd file**. I will knit it myself, in a folder that contains `meltem_daily.csv`. So it must run from top to bottom without errors in less than 5 minutes, and it must read the data with the relative file name used in the fixed code. The last chunk of this document collects your objects `imputed` and `split` when it is knitted; knit it yourself first and check that the table at the end shows both.
+- Nobody tells you which method to use. Choose your methods, and **explain and justify your choices** in the places marked *Explanation*. A good explanation refers to what you saw in *this* data (a number, a plot) and not to general statements. Generic explanations receive little credit. Respect the word limits.
+- Your code must run from top to bottom without errors. Never install new packages. Only the packages we have shown in the course are allowed: `dplyr`, `tidyr`, `readr`, `ggplot2`, `DMwR2`, `mice` and base R.
+- You may use AI tools, but you alone are responsible for what you submit. Read the data, and check what the tools do.
+
+**Which data?** `meltem` is the original table as it was given. Only Task 1 produces an imputed table (`imputed`). Tasks 2, 3 and 4 work on the original `meltem`, not on `imputed`: the columns they use (`date`, `turbine`, `fault_next7`, `energy_mwh`, `rotor_rpm`, `gbx_oil_c`) have no gaps, so imputation does not matter there. In Task 1 work on a copy of `meltem` and leave `meltem` itself unchanged.
+
+Good luck!
+
+
+### Fixed code (do not change)
+```{r fixed, cache=F, message=FALSE, warning=FALSE}
+library(dplyr); library(tidyr); library(readr); library(ggplot2); library(DMwR2); library(mice)
+my_seed <- as.numeric(student_id) %% 1000003
+meltem  <- read_csv("meltem_daily.csv", show_col_types = FALSE)   # 21,924 rows, 34 columns
+dim(meltem)
+```
+
+
+### TASK 1: Missing values (10 points)
+`meltem` has missing values. Find all of them and impute them.
+
+Work on a copy of `meltem` and put your result in a data frame named `imputed`, which has the same rows and the same columns as `meltem`. Your imputed values will be compared with the true values (that only the instructor knows): the closer you are, the more points you get. You can lose up to 5 points if you do not explain properly what you did and why.
+
+#### Answer
+```{r task1, cache=F}
+# your code here
+```
+
+#### Explanation (at most 250 words)
+For every column that has gaps: what is the problem with its gaps, which method did you choose and why, and how did you check that your choice is good?
+
+*(write your explanation here)*
+
+
+### TASK 2: A fair training/test split (6 points)
+We want to build a model that predicts the target `fault_next7` from the other columns. You do **not** build the model. Create a training sample and a test sample from the original `meltem` table for this purpose. Start your code with `set.seed(my_seed)`.
+
+Put your result in a data frame named `split` with the three columns `date`, `turbine` and `set`, one row for every `meltem` row that you use, where `set` is `"train"` or `"test"`. Rows that you do not use are simply not in `split`. Your split will be checked for being fair.
+
+#### Answer
+```{r task2, cache=F}
+# your code here
+```
+
+#### Explanation (at most 250 words)
+How did you build the two samples, why is this a fair split for *this* data, and which checks did you do?
+
+*(write your explanation here)*
+
+
+### TASK 3: Time series components (7 points)
+Build the series of the **average daily farm energy per month** from the original `meltem` table: for each day add up `energy_mwh` of the 12 turbines, then average these daily totals within every calendar month. You should get 60 values, from January 2020 to December 2024. As a check, the value of January 2020 is 119.9 MWh per day. Make it a monthly time series (`ts`) and decompose it with `stl`.
+
+Draw the decomposition and evaluate it: what do the trend, the seasonal and the remainder components tell about the farm? Use the autocorrelation function (`acf`) to judge the remainder.
+
+#### Answer
+```{r task3, cache=F}
+# your code here
+```
+
+#### Explanation (at most 250 words)
+Describe the trend, the seasonality and the remainder, and say what the `acf` plot shows and what that means.
+
+*(write your explanation here)*
+
+
+### TASK 4: Exploratory analysis (7 points)
+The farm has two turbine models with different rated power. The file does not say which turbine has which model. Use the whole original `meltem` table.
+
+**4.1** Find out from the data which turbines belong to the larger model. Draw the plots that show it, and write the ids of the turbines of the larger model in your explanation.
+
+**4.2** Compute the correlation between `rotor_rpm` and `gbx_oil_c` (i) over all rows, (ii) over the rows of the turbines of the larger model, (iii) over the rows of the turbines of the smaller model. Draw one scatter plot of `rotor_rpm` against `gbx_oil_c` that shows the finding.
+
+**4.3** Evaluate your findings.
+
+#### Answer
+```{r task4, cache=F}
+# your code here
+```
+
+#### Explanation (at most 250 words)
+Which turbines are the larger model, and how did you recognise them? What do the three correlations tell about the relation between rotor speed and gearbox oil temperature? What would you tell the maintenance engineers of the farm?
+
+*(write your explanation here)*
+
+
+### Submission (do not change)
+Submit this Rmd file only. When it is knitted, the chunk below collects `imputed` and `split` (it writes `imputed_<your id>.csv` and `split_<your id>.csv`). The table only tells whether the two objects are found in the required format.
+
+```{r final, echo=FALSE}
+key3 <- c("date", "turbine", "set")
+orig <- read_csv("meltem_daily.csv", show_col_types = FALSE)    # re-read: your own code may have changed `meltem`
+imputed <- get0("imputed", ifnotfound = NULL); split <- get0("split", ifnotfound = NULL)
+ok_imp <- is.data.frame(imputed) && nrow(imputed) == nrow(orig) && all(names(orig) %in% names(imputed))
+ok_spl <- is.data.frame(split) && all(key3 %in% names(split)) && nrow(split) > 0 && all(split$set %in% c("train", "test"))
+if (ok_imp) write.csv(imputed[, names(orig)], paste0("imputed_", student_id, ".csv"), row.names = FALSE)
+if (ok_spl) write.csv(split[, key3], paste0("split_", student_id, ".csv"), row.names = FALSE)
+kable(data.frame(item = c("Task 1: `imputed` is ready", "Task 2: `split` is ready"), status = c(ifelse(ok_imp, "yes", "NO"), ifelse(ok_spl, "yes", "NO"))))
+```
