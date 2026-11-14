@@ -94,7 +94,7 @@ Work on a copy of `meltem` and put your result in a data frame named `imputed`, 
 #### Answer
 ```{r task1, cache=F}
 set.seed(my_seed)
-imputed <- meltem                                   # a copy; meltem stays unchanged
+imputed <- meltem
 rmse <- function(p, a) sqrt(mean((p - a)^2))
 
 # ---- 1. Where are the gaps? ----
@@ -108,42 +108,45 @@ max(imputed$vib_gbx_mm_s, na.rm = TRUE)   # exactly 9 = the end of the sensor ra
 imputed %>% group_by(month = format(date, "%m")) %>%
   summarise(wind = mean(is.na(wind_ms)), gen_temp = mean(is.na(gen_temp_c)), vib = mean(is.na(vib_gbx_mm_s))) %>%
   mutate(across(-month, ~ round(.x, 3))) %>% print(n = 12)
-imputed %>% group_by(gen_temp_missing = is.na(gen_temp_c)) %>% summarise(gen_wind_u_c = mean(gen_wind_u_c), n = n())
+imputed %>% group_by(gen_temp_missing = is.na(gen_temp_c)) %>% summarise(ambient_c = mean(ambient_c), n = n())
 imputed %>% group_by(vib_missing = is.na(vib_gbx_mm_s)) %>% summarise(energy_mwh = mean(energy_mwh), gbx_brg_c = mean(gbx_brg_c), n = n())
 
-# ---- 3. Which method is best? Hide known values, impute, compare (Lecture 4) ----
+# ---- 3. Which method is best? Hide known values, impute them, compare with the truth (RMSE) ----
 d <- imputed %>% select(where(is.numeric), -fault_next7) %>% as.data.frame()
 d$turbine <- factor(imputed$turbine)
 gaps <- c("wind_ms", "gen_temp_c", "vib_gbx_mm_s")
 hid <- list(wind_ms = sample(which(!is.na(d$wind_ms)), 1000),                       # wind gaps: single days
             gen_temp_c = unlist(lapply(sample(which(!is.na(d$gen_temp_c)), 150), function(i) i:(i + 6))))  # gen gaps: blocks of days
-hid$gen_temp_c <- hid$gen_temp_c[hid$gen_temp_c <= nrow(d)]
+hid$gen_temp_c <- unique(hid$gen_temp_c[hid$gen_temp_c <= nrow(d)])   # blocks may overlap: count each day once
 hid$gen_temp_c <- hid$gen_temp_c[!is.na(d$gen_temp_c[hid$gen_temp_c])]
 holed <- d; for (v in names(hid)) holed[[v]][hid[[v]]] <- NA
 
-lm_fill <- function(data, v) {            # regression on all complete columns
+lm_fill <- function(data, v) {            # method: linear regression on all complete columns
   fit <- lm(as.formula(paste(v, "~ . -", paste(setdiff(gaps, v), collapse = " - "))), data)
   predict(fit, data)
 }
-same_day <- function(res, date) ave(res, date, FUN = function(z) mean(z, na.rm = TRUE))           # other turbines, same day
-in_time  <- function(res, turbine) ave(res, turbine, FUN = function(z) approx(seq_along(z), z, seq_along(z), rule = 2)$y)  # neighbouring days
+# method: regression + correction of its error (residual)
+same_day <- function(res, date) ave(res, date, FUN = function(z) mean(z, na.rm = TRUE))           # wind: mean residual of the other turbines on the same day
+in_time  <- function(res, turbine) ave(res, turbine, FUN = function(z) approx(seq_along(z), z, seq_along(z), rule = 2)$y)  # gen_temp: residual interpolated from the neighbouring days
 
-kn <- knnImputation(holed[, names(holed) != "turbine"], k = 10)
-mi <- complete(suppressWarnings(mice(holed[, names(holed) != "turbine"], m = 1, method = "pmm", seed = my_seed, printFlag = FALSE)))  # only a note about collinear columns
+kn <- knnImputation(holed[, names(holed) != "turbine"], k = 10)   # method: kNN imputation (10 nearest rows)
 p_w <- lm_fill(holed, "wind_ms");    r_w <- holed$wind_ms - p_w
 p_g <- lm_fill(holed, "gen_temp_c"); r_g <- holed$gen_temp_c - p_g
-score <- function(v, p) rmse(p[hid[[v]]], d[[v]][hid[[v]]])
+score <- function(v, p) rmse(p[hid[[v]]], d[[v]][hid[[v]]])     # RMSE on the hidden values only
+# compare: median, kNN, regression, regression + correction
 rbind(wind_ms    = c(median = score("wind_ms", median(holed$wind_ms, na.rm = TRUE) + 0 * p_w), knn = score("wind_ms", kn$wind_ms),
-                     mice = score("wind_ms", mi$wind_ms), lm = score("wind_ms", p_w), lm_corrected = score("wind_ms", p_w + same_day(r_w, imputed$date))),
+                     lm = score("wind_ms", p_w), lm_corrected = score("wind_ms", p_w + same_day(r_w, imputed$date))),
       gen_temp_c = c(median = score("gen_temp_c", median(holed$gen_temp_c, na.rm = TRUE) + 0 * p_g), knn = score("gen_temp_c", kn$gen_temp_c),
-                     mice = score("gen_temp_c", mi$gen_temp_c), lm = score("gen_temp_c", p_g), lm_corrected = score("gen_temp_c", p_g + in_time(r_g, imputed$turbine)))) %>% round(2)
+                     lm = score("gen_temp_c", p_g), lm_corrected = score("gen_temp_c", p_g + in_time(r_g, imputed$turbine)))) %>% round(2)
 
 # vib is cut at 9: test the idea by pretending the sensor stopped at 8
+# compare: regression, regression but at least the sensor limit (pmax), median
 v8 <- d; truth <- v8$vib_gbx_mm_s; cut8 <- !is.na(truth) & truth > 8; v8$vib_gbx_mm_s[cut8] <- NA
 p_v8 <- lm_fill(v8, "vib_gbx_mm_s")
 c(lm = rmse(p_v8[cut8], truth[cut8]), lm_at_least_8 = rmse(pmax(p_v8, 8)[cut8], truth[cut8]), median_known = rmse(median(v8$vib_gbx_mm_s, na.rm = TRUE), truth[cut8])) %>% round(2)
 
 # ---- 4. Impute with the chosen methods ----
+# wind_ms: regression + same-day correction; gen_temp_c: regression + time correction; vib_gbx_mm_s: regression, at least 9
 p <- lm_fill(d, "wind_ms")
 d$wind_ms <- ifelse(is.na(d$wind_ms), p + same_day(d$wind_ms - p, imputed$date), d$wind_ms)
 p <- lm_fill(d, "gen_temp_c")
@@ -158,13 +161,13 @@ c(same_dim = identical(dim(imputed), dim(meltem)), any_na = anyNA(imputed))
 #### Explanation (at most 250 words)
 For every column that has gaps: what is the problem with its gaps, which method did you choose and why, and how did you check that your choice is good?
 
-Three columns have gaps. I tested the Lecture 4 methods by hiding known values and comparing them with the truth (RMSE).
+I compared methods by hiding known values, imputing them and measuring the error (RMSE).
 
-**`wind_ms`** has no NAs but 1,113 `-9999` values. These are hidden NAs (an impossible speed), so I used `na_if`. The gaps are MCAR: about 5% in every month. Regression on the complete columns is as good as kNN (0.56 vs 0.55). Turbines on the same day share the same wind, so I added the mean regression residual of the other turbines on that day. On 1,000 hidden values the RMSE is: median 2.07, mice 0.61, kNN 0.55, **regression + same-day correction 0.34**.
+**wind_ms** had no NAs, but 1,113 values were -9999, an impossible wind speed, so I converted them to NA with `na_if`. The missingness seems MCAR: about 5% in every month. Regression and kNN performed similarly (0.56 and 0.55). Since all turbines see the same wind on the same day, I corrected the regression predictions with the average residual of the other turbines on that day. On 1,000 hidden values, this reduced the RMSE to 0.34, compared with 2.07 for the median.
 
-**`gen_temp_c`** (1,381 NAs) is MAR: 22% of January and 0% of June is missing, in blocks of days, when the windings are cold (42.6 vs 52.7 °C). A median would be biased. The regression residual of neighbouring days is similar, so I added it, interpolated in time. On hidden 7-day blocks: median 6.99, kNN 1.84, mice 2.15, regression 1.23, **regression + time correction 0.91**.
+**gen_temp_c** had 1,381 NAs. The missingness seems MAR: 22% of January is missing but 0% of June, in blocks of days, when the outside air is cold (6.9 vs 15.4 °C). A median would therefore be biased. The regression residuals of nearby days were similar, so I interpolated them over time. On hidden 7-day blocks this gave an RMSE of 0.90, better than regression alone (1.22), kNN (1.84) and the median (7.00).
 
-**`vib_gbx_mm_s`** (990 NAs) is MNAR. The dictionary says the sensor measures 0–9 mm/s, the largest value is exactly 9, and the gaps come on windy summer days (40 vs 18 MWh). These values were above 9. Every method fitted on the known values predicts too low. I checked this by pretending the sensor stopped at 8: the regression RMSE was 0.90 and the median 1.88, but with `pmax(prediction, 8)` it fell to **0.45**. So I filled the gaps with `pmax(regression, 9)`.
+**vib_gbx_mm_s** had 990 NAs and appears MNAR. The sensor range is 0–9 mm/s, the largest value is exactly 9, and the gaps occur on high-production days (40 vs 18 MWh). So I suspected that these values exceeded the sensor limit. To test this, I simulated a limit of 8: the regression RMSE dropped from 0.90 to 0.45 with `pmax(prediction, 8)`, compared with 1.88 for the median. I therefore used `pmax(regression, 9)` for the real gaps.
 
 
 ### TASK 2: A fair training/test split (6 points)
@@ -175,8 +178,9 @@ Put your result in a data frame named `split` with the three columns `date`, `tu
 #### Answer
 ```{r task2, cache=F}
 set.seed(my_seed)
-# rows are not independent (Lecture 6): fault_next7 comes in runs of days
-acf(meltem$fault_next7[meltem$turbine == "T01"], lag.max = 14, main = "ACF of fault_next7, turbine T01")
+# rows are not independent: fault_next7 comes in runs of days
+a <- acf(meltem$fault_next7[meltem$turbine == "T01"], lag.max = 14, main = "ACF of fault_next7, turbine T01")
+round(a$acf[2:9], 2)                                          # lags 1 ... 8 days
 # and all turbines share the same weather on the same day
 cor(meltem$energy_mwh[meltem$turbine == "T01"], meltem$energy_mwh[meltem$turbine == "T03"])
 
@@ -197,11 +201,11 @@ split %>% left_join(meltem, by = c("date", "turbine")) %>% group_by(set) %>%
 #### Explanation (at most 250 words)
 How did you build the two samples, why is this a fair split for *this* data, and which checks did you do?
 
-The rows of this table are not independent (Lecture 6), so a random or stratified row split would not be fair. `fault_next7` comes in runs: one repair makes 7 positive days in a row. The ACF of the target of T01 is 0.86 at lag 1 and only reaches 0 after about 7 days. In a random split, days of the same fault event would land in both sets, and the model would only need to recognise its neighbour day. In addition, all turbines see the same weather (the daily energy of T01 and T03 correlates at 0.93).
+The rows are not independent, so I decided not to use a random or stratified split. The target `fault_next7` appears in consecutive days because one repair creates 7 positive labels. For T01, the target ACF is 0.86 at lag 1 and drops to around zero after 7 days. With a random split, days from the same fault event would appear in both training and testing, so the model could simply copy the label of the neighbouring day and the test score would be too optimistic. Turbines also share weather conditions (daily energy correlation of 0.93 between T01 and T03), so all turbines of one day should be in the same set.
 
-So I used a **time-ordered split**: train on the past, test on the future. The test set is the whole year 2024 (4,392 rows, 20.1%), so it covers every season and all 12 turbines. The training set is 2020-01-01 to 2023-12-24 (17,448 rows). I left out the last 7 days of 2023 (84 rows) because their label looks 7 days into the test year and would leak test information. Whole days go to one side.
+I therefore used a time-based split: training on the past and testing on the future. The training period is 2020-01-01 to 2023-12-24 (17,448 rows), while the test set contains all of 2024 (4,392 rows, 20.1%), so it covers every season. I excluded the last 7 days of 2023 (84 rows) to avoid label leakage, since their target looks 7 days ahead into 2024.
 
-Checks: both sets contain all 12 turbines, and the dates do not overlap (training ends 2023-12-24, testing starts 2024-01-01). The rare target is present in both sets: 374 positives (2.14%) in training and 70 (1.59%) in testing. So the test set has enough positives to measure recall and precision. The rate is a bit lower in 2024 because that year simply had fewer repairs, which a fair future test must accept.
+I checked that both sets include all 12 turbines and have no overlapping dates. Training has 374 positive cases (2.14%), while testing has 70 (1.59%), which is enough to evaluate the model. Although the positive rate is slightly lower in 2024, I kept the split because that year simply had fewer repairs, and the goal is to evaluate how the model performs on future data.
 
 
 ### TASK 3: Time series components (7 points)
@@ -224,25 +228,25 @@ round(dec$time.series[1:12, "seasonal"])                    # seasonal effect, J
 round(aggregate(dec$time.series[, "trend"], FUN = mean))    # trend, mean per year
 round(apply(dec$time.series, 2, sd), 1)                     # size of the three components
 
-par(mfrow = c(1, 2))
+par(mfrow = c(1, 2))                                        # two plots side by side; lag axis in years (1.0 = 12 months)
 acf(energy_ts, main = "ACF: raw series")
 acf(dec$time.series[, "remainder"], main = "ACF: remainder")
 par(mfrow = c(1, 1))
-round(acf(dec$time.series[, "remainder"], plot = FALSE)$acf[2:4], 2)   # lags 1, 2, 3
+round(acf(dec$time.series[, "remainder"], plot = FALSE)$acf[2:13], 2)  # remainder, lags 1 ... 12 months
 ```
 
 #### Explanation (at most 250 words)
 Describe the trend, the seasonality and the remainder, and say what the `acf` plot shows and what that means.
 
-The series has 60 values, and January 2020 is 119.9 MWh/day. As in the lecture, I used `s.window = "periodic"`: five years are too short to estimate a changing seasonal pattern.
+The series has 60 values, and January 2020 is 119.9 MWh/day. I used `s.window = "periodic"`, the same seasonal pattern every year: five years are too short to estimate a changing one.
 
-**Seasonality** is the largest component (sd 66.4). It peaks in July (+118) and August (+92) and is lowest in December (−85), so summer and winter differ by about 200 MWh/day. This is the *meltem*, the strong summer wind of the Aegean: the farm produces most of its energy in June–September.
+**Seasonality** is the largest component (sd 66.4). It peaks in July (+118) and August (+92) and is lowest in December (−85), so summer and winter differ by about 200 MWh/day. This is the *meltem*, the strong summer wind of the Aegean: the farm produces most of its energy in May–September.
 
-**Trend** (sd 25.5) rises from 189 MWh/day in 2020 to 245 in 2022, then stays flat (246 and 251). Production grew by about 30% in the first three years and then reached a stable level.
+**Trend** (sd 25.5) rises from 189 MWh/day in 2020 to 245 in 2022, then stays flat (246 and 251). Production grew by about 30%, then stabilised.
 
-**Remainder** (sd 35.1) is not small: it is larger than the trend. Some months are much better or worse than trend plus season, for example unusual weather or turbines out of service.
+**Remainder** (sd 35.1) is not small: it is larger than the trend. Some months are much better or worse than trend plus season.
 
-**ACF.** The raw series shows a seasonal wave with a peak at lag 12 (one year). In the remainder this wave is gone, so the decomposition removed the seasonality. But the remainder is not white noise: lags 2 and 3 are −0.37 and −0.26, outside the blue band. A strong month tends to be followed by weaker months two or three months later. Like the AirPassengers example in Lecture 6, some structure is left in the remainder, so a model of this series should also use past months (lags) and not only trend and season.
+**ACF.** The raw series shows a seasonal wave with a peak at lag 12 (one year). In the remainder this positive peak is gone, so the decomposition removed most of the seasonality. But the remainder is not white noise: lags 2 and 3 are −0.37 and −0.26, outside the blue band, so a strong month tends to be followed by weaker months two or three months later. Lag 12 is now negative (−0.40): a fixed seasonal pattern cannot follow the differences between the summers of the five years, so they stay in the remainder. A model of this series should therefore also use past months (lags), not only trend and season.
 
 
 ### TASK 4: Exploratory analysis (7 points)
@@ -265,7 +269,7 @@ ggplot(meltem, aes(turbine, energy_mwh)) + geom_boxplot() +
   labs(title = "Daily energy per turbine", y = "energy (MWh/day)")
 ggplot(meltem, aes(turbine, rotor_rpm)) + geom_boxplot() +
   labs(title = "Rotor speed per turbine", y = "rotor speed (rpm)")
-big_ids <- per_turbine$turbine[per_turbine$max_energy > 55]
+big_ids <- per_turbine$turbine[per_turbine$max_energy > 55]   # 55: in the empty gap between 48 and 64 MWh/day
 big_ids
 
 # 4.2 correlations: all rows, then per model
@@ -273,6 +277,7 @@ m4 <- meltem %>% mutate(model = ifelse(turbine %in% big_ids, "larger", "smaller"
 round(cor(m4$rotor_rpm, m4$gbx_oil_c), 2)
 m4 %>% group_by(model) %>%
   summarise(r = round(cor(rotor_rpm, gbx_oil_c), 2), mean_rpm = round(mean(rotor_rpm), 1), mean_oil = round(mean(gbx_oil_c), 1))
+# one scatter plot: colour = model, solid lines = trend within each model, dashed line = trend over all rows
 ggplot(m4, aes(rotor_rpm, gbx_oil_c, colour = model)) + geom_point(alpha = 0.1) +
   geom_smooth(method = "lm", formula = y ~ x, se = FALSE) +
   geom_smooth(aes(group = 1), method = "lm", formula = y ~ x, se = FALSE, colour = "black", linetype = 2) +
@@ -283,7 +288,7 @@ ggplot(m4, aes(rotor_rpm, gbx_oil_c, colour = model)) + geom_point(alpha = 0.1) 
 #### Explanation (at most 250 words)
 Which turbines are the larger model, and how did you recognise them? What do the three correlations tell about the relation between rotor speed and gearbox oil temperature? What would you tell the maintenance engineers of the farm?
 
-**4.1** The larger model is **T02, T05, T06, T09 and T11**. The rated power is the ceiling of the daily energy. These five turbines reach 64–70 MWh/day, and the other seven stop at 43–48 MWh/day. No turbine falls in between: the energy boxplot shows two groups (a hidden group, Lecture 7). The rotor speed boxplot shows the same five turbines: they turn slowly (mean 6.7–6.9 rpm), and the other seven turn at 10.7–11.1 rpm.
+**4.1** The larger model is **T02, T05, T06, T09 and T11**. The rated power is the ceiling of the daily energy. These five turbines reach 64–70 MWh/day, and the other seven stop at 43–48 MWh/day. No turbine falls in between: the energy boxplot shows two clear groups. The rotor speed boxplot shows the same five turbines: they turn slowly (mean 6.6–6.9 rpm), and the other seven turn at 10.7–11.1 rpm.
 
 **4.2** Over all rows r = **−0.37**. Within the larger model r = **+0.65** and within the smaller model r = **+0.67**. The sign flips: this is Simpson's reversal. Within each model, a faster rotor (more wind, more load) means hotter gearbox oil. But the larger model turns slowly *and* runs hot (mean oil 66.5 °C at 6.8 rpm), while the smaller model turns fast and runs cool (39.4 °C at 10.9 rpm). This difference between the groups produces the negative pooled trend (dashed line).
 
